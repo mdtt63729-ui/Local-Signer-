@@ -10,42 +10,35 @@ An offline, serverless Android app that signs APKs directly on the device using 
 2. Select **Open** and choose the directory containing this project
 3. Allow Android Studio to fix any incompatibilities as it imports the project
 4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+5. Run the app on an emulator or physical device
 
-## Build via GitHub Actions
+## Build Unsigned Release APK via GitHub Actions
 
-Every push (to `main`/`master`) and every pull request automatically triggers a build in GitHub Actions (see `.github/workflows/build.yml`). The workflow builds both a **debug APK** and a **release APK**, runs unit tests, and uploads the APKs as downloadable artifacts.
+Every push (to `main`/`master`) and every pull request automatically triggers a build in GitHub Actions (see `.github/workflows/build.yml`). The workflow builds **one unsigned release APK** (`app-release-unsigned.apk`) and uploads it as a downloadable artifact — no keystore, no secrets, no signing.
 
-After a successful run: go to your repo → **Actions** tab → click the run → scroll down to **Artifacts** to download the APK.
+After a successful run: go to your repo → **Actions** tab → click the latest run → scroll down to **Artifacts** → download `unsigned-release-apk`.
 
-### Signing the release APK (optional but recommended)
+You can also trigger the build manually from the Actions tab (**Run workflow** button).
 
-The release build is signed with a keystore whose path comes from the `KEYSTORE_PATH` environment variable (defaults to `my-upload-key.jks` in the project root). To sign the release build in CI, set up these GitHub **repository secrets**:
+## Signing the APK yourself (after download)
 
-| Secret name | What it is |
-|---|---|
-| `SIGNING_KEYSTORE` | Your `.jks` keystore file, **base64-encoded** (see below) |
-| `STORE_PASSWORD` | Keystore password |
-| `KEY_PASSWORD` | Key (alias) password — the alias must be `upload` |
-
-To base64-encode your keystore locally:
+The artifact is unsigned, so Android will refuse to install it as-is. Sign it locally with your own keystore using Android SDK's `apksigner`:
 
 ```bash
-base64 -i my-upload-key.jks | tr -d '\n'
+# Koyekta jinish lagbe apner device e: Android SDK er build-tools
+apksigner sign --ks my-upload-key.jks --out LocalApkSigner-signed.apk app-release-unsigned.apk
+
+# Verify:
+apksigner verify --print-certs LocalApkSigner-signed.apk
 ```
 
-Copy the entire output, then in your repo go to **Settings → Secrets and variables → Actions → New repository secret**, and paste it as `SIGNING_KEYSTORE`. Add `STORE_PASSWORD` and `KEY_PASSWORD` the same way.
-
-If no secrets are set, the debug APK still builds; only the release APK will fail to sign (it will remain unsigned / the build will error on the release step).
-
-### Keystore alias
-
-The signing config uses the alias **`upload`**. When generating a new keystore, create it with:
+Noye keystore banate:
 
 ```bash
 keytool -genkeypair -v -keystore my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
 ```
+
+(Note: ei app ta nije-i ekta on-device APK signer — tamey ei app diye o unsigned APK sign korte paro.)
 
 ## Project stack
 

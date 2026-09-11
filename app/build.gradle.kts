@@ -23,30 +23,17 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  signingConfigs {
-    create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD")
-      keyAlias = "upload"
-      keyPassword = System.getenv("KEY_PASSWORD")
-    }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
-  }
-
   buildTypes {
     release {
       isCrunchPngs = false
       isMinifyEnabled = false
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      signingConfig = signingConfigs.getByName("release")
+      // Kono signingConfig nei — ei build ta "app-release-unsigned.apk" toiri korbe.
+      // APK ta pathanor age nijer keystore diye sign korte hobe
+      // (jemon: apksigner sign --ks my-key.jks --out app-signed.apk app-release-unsigned.apk).
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+    // debug build type er jonno kono custom signing lagbe na —
+    // AGP nije ekta default debug keystore toiri kore use kore.
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
