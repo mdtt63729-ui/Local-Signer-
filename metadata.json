@@ -1,0 +1,6 @@
+{
+  "name": "Local APK Signer",
+  "description": "An offline, serverless Android app that signs APKs directly on the device using CodeAssist's apksigner integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

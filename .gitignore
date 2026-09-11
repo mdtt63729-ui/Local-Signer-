@@ -1,0 +1,39 @@
+# Gradle
+*.iml
+.gradle
+.kotlin
+/local.properties
+
+# IntelliJ / Android Studio
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+
+# Build outputs
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Keystores & signing secrets — JAMA KORBE NA
+*.jks
+*.keystore
+my-upload-key.jks
+debug.keystore
+
+# Environment / API keys
+.env
+
+# Firebase config (secret)
+google-services.json
+
+# Logs & crash reports
+*.log
+hs_err_pid*
+replay_pid*
