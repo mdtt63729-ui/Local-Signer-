@@ -504,7 +504,7 @@ object ProtectionEngine {
         if (readU16(data, offset) != 0x0001) return null
         val headerSize = readU16(data, offset + 2)
         val stringCount = readU32(data, offset + 8).toInt()
-        val flags = readU32(data, offset + 16)
+        val flags = readU32(data, offset + 16).toInt()
         val stringsStart = readU32(data, offset + 20).toInt()
         val isUtf8 = (flags and 0x100) != 0
         if (stringCount <= 0 || stringCount > 200000) return null
