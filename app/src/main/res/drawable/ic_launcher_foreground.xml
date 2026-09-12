@@ -1,8 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:width="66dp"
-        android:height="66dp"
-        android:drawable="@drawable/signer_icon_1789025575334"
-        android:gravity="center" />
-</layer-list>
+<!-- Premium shield + keyhole glyph — white on gradient, centered in adaptive safe zone -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Shield -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,30 C50,31.5 43,33.5 38,36.5 C38.5,48 41,64 54,77 C67,64 69.5,48 70,36.5 C65,33.5 58,31.5 54,30 Z" />
+    <!-- Keyhole (circle + slot) -->
+    <path
+        android:fillColor="#FF4353D9"
+        android:pathData="M48,49 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z M51.5,53 L51.5,63.5 a2.5,2.5 0 0,0 5,0 L56.5,53 Z" />
+</vector>

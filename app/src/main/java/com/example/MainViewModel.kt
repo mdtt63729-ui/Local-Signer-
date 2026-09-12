@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -431,6 +432,10 @@ class MainViewModel : ViewModel() {
     }
 
     fun installApk(context: Context, file: File) {
+        if (!file.exists()) {
+            Toast.makeText(context, "APK not found at: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+            return
+        }
         try {
             val uri = FileProvider.getUriForFile(
                 context,
@@ -443,25 +448,38 @@ class MainViewModel : ViewModel() {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
+        } catch (e: android.content.ActivityNotFoundException) {
+            Toast.makeText(context, "No package installer found on this device.", Toast.LENGTH_LONG).show()
+            Log.e("MainViewModel", "Install failed", e)
         } catch (e: Exception) {
+            Toast.makeText(context, "Install failed: ${e.message}", Toast.LENGTH_LONG).show()
             Log.e("MainViewModel", "Install failed", e)
         }
     }
 
     fun shareApk(context: Context, file: File) {
+        if (!file.exists()) {
+            Toast.makeText(context, "APK not found at: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+            return
+        }
         try {
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
                 file
             )
-            val intent = Intent(Intent.ACTION_SEND).apply {
+            val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "application/vnd.android.package-archive"
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                // Kichu app ClipData chara stream read korte pare na
+                clipData = android.content.ClipData.newRawUri("APK", uri)
             }
-            context.startActivity(Intent.createChooser(intent, "Share APK"))
+            val chooser = Intent.createChooser(shareIntent, "Share APK")
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
         } catch (e: Exception) {
+            Toast.makeText(context, "Share failed: ${e.message}", Toast.LENGTH_LONG).show()
             Log.e("MainViewModel", "Share failed", e)
         }
     }

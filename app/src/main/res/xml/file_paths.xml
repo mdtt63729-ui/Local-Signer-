@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
+    <!-- App-specific external storage (Android/data/<pkg>/files) -->
     <external-files-path name="external_files" path="." />
+    <!-- Public Download folder — SignedAPKs output ekhane save hoy -->
+    <external-path name="public_download" path="Download/" />
+    <!-- Internal cache -->
+    <cache-path name="cache" path="." />
 </paths>

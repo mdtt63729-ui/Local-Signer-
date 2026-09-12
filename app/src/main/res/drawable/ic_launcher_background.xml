@@ -1,9 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
-    <gradient
-        android:angle="135"
-        android:endColor="#1E88E5"
-        android:startColor="#1565C0"
-        android:type="linear" />
-</shape>
+<!-- Premium gradient background — indigo to violet, diagonal -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="108"
+                android:endY="108"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#FF4353D9" />
+                <item android:offset="0.55" android:color="#FF5A4FE0" />
+                <item android:offset="1.0" android:color="#FF7B5CE6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>
