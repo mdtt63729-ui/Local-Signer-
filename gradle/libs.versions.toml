@@ -44,11 +44,14 @@ googleid = "1.1.1"
 
 
 apksig = "8.7.0"
+smali = "3.0.7"
 bouncycastle = "1.77"
 
 [libraries]
 apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
 zipflinger = { module = "com.android:zipflinger", version.ref = "apksig" }
+smali-lib = { module = "com.android.tools.smali:smali", version.ref = "smali" }
+smali-baksmali = { module = "com.android.tools.smali:smali-baksmali", version.ref = "smali" }
 bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }

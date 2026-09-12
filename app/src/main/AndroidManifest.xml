@@ -38,6 +38,11 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- Split APK install session er result receiver -->
+        <receiver
+            android:name=".InstallResultReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

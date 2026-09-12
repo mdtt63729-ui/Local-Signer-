@@ -14,6 +14,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -71,6 +72,7 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FilePresent
 import androidx.compose.material.icons.filled.FolderZip
@@ -103,6 +105,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
@@ -317,6 +320,11 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val haptic = LocalHapticFeedback.current
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
+    // App start e storage theke ager signed APK gulo history te load hoy
+    LaunchedEffect(Unit) {
+        viewModel.loadHistoryFromDisk(context)
+    }
+
     val apkPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -426,7 +434,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         onNavigatePhase = { viewModel.navigateToPhase(it) },
                         onInstall = { viewModel.installApk(context, it) },
                         onShare = { viewModel.shareApk(context, it) },
-                        onRename = { item, name -> viewModel.renameHistoryItem(context, item, name) }
+                        onRename = { item, name -> viewModel.renameHistoryItem(context, item, name) },
+                        onDelete = { item -> viewModel.deleteHistoryItem(context, item) }
                     )
                 }
                 AppPhase.SCANNING -> {
@@ -438,7 +447,16 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 AppPhase.EXTRACTOR -> {
                     ExtractorScreen(state, viewModel, haptic, context)
                 }
-                AppPhase.APP_CLONER, AppPhase.SPLIT_MERGER, AppPhase.COMPARE, AppPhase.MANIFEST_VIEWER -> {
+                AppPhase.SPLIT_MERGER -> {
+                    SplitMergerScreen(state, viewModel, haptic, context)
+                }
+                AppPhase.COMPARE -> {
+                    CompareScreen(state, viewModel, haptic, context)
+                }
+                AppPhase.MANIFEST_VIEWER -> {
+                    ManifestViewerScreen(state, viewModel, context)
+                }
+                AppPhase.APP_CLONER -> {
                     PlaceholderScreen(state, viewModel, haptic)
                 }
                 AppPhase.CONFIG -> {
@@ -636,11 +654,14 @@ fun IdleScreen(
     onNavigatePhase: (AppPhase) -> Unit,
     onInstall: (File) -> Unit,
     onShare: (File) -> Unit,
-    onRename: (SignedHistory, String) -> Unit
+    onRename: (SignedHistory, String) -> Unit,
+    onDelete: (SignedHistory) -> Unit
 ) {
     val context = LocalContext.current
     // Manual rename er jonno jei history item select kora ache
     var renamingItem by remember { mutableStateOf<SignedHistory?>(null) }
+    // Delete confirm er jonno
+    var deletingItem by remember { mutableStateOf<SignedHistory?>(null) }
 
     Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
@@ -833,7 +854,7 @@ fun IdleScreen(
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    "/Downloads/SignedAPKs/",
+                                    "/SignedAPKs/",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                                 )
@@ -857,16 +878,11 @@ fun IdleScreen(
                                 Text("Install")
                             }
                             Spacer(modifier = Modifier.width(8.dp))
-                            OutlinedButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    onShare(historyItem.file)
-                                },
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Share")
+                            IconButton(onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onShare(historyItem.file)
+                            }) {
+                                Icon(Icons.Filled.Share, contentDescription = "Share", modifier = Modifier.size(20.dp))
                             }
                             Spacer(modifier = Modifier.width(4.dp))
                             IconButton(onClick = {
@@ -885,6 +901,17 @@ fun IdleScreen(
                                 renamingItem = historyItem
                             }) {
                                 Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename", modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                deletingItem = historyItem
+                            }) {
+                                Icon(
+                                    Icons.Filled.Delete,
+                                    contentDescription = "Delete",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
                         }
                     }
@@ -905,6 +932,33 @@ fun IdleScreen(
                 renamingItem = null
             },
             onDismiss = { renamingItem = null }
+        )
+    }
+
+    // Delete dialog — history + storage dui jaygatei permanently delete
+    deletingItem?.let { item ->
+        AlertDialog(
+            onDismissRequest = { deletingItem = null },
+            title = { Text("Delete APK?") },
+            text = {
+                Text(
+                    "\"${item.fileName}\" will be permanently deleted from your storage.\n\nPath:\n${item.path}"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDelete(item)
+                    deletingItem = null
+                }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingItem = null }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }
@@ -1327,6 +1381,17 @@ fun ConfigScreen(
         Column(
             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
         ) {
+            // Anti-tamper protection switch — sign button er thik upore
+            if (!state.isSigning) {
+                ProtectionSwitchCard(
+                    checked = state.protectEnabled,
+                    onChange = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.setProtection(it)
+                    }
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+            }
             if (state.isSigning) {
                 OutlinedButton(
                     onClick = {
@@ -1377,6 +1442,63 @@ fun ConfigScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config: anti-tamper protection switch — smooth animated Material 3 card
+// ---------------------------------------------------------------------------
+@Composable
+private fun ProtectionSwitchCard(checked: Boolean, onChange: (Boolean) -> Unit) {
+    val containerColor by animateColorAsState(
+        targetValue = if (checked) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        animationSpec = tween(350, easing = FastOutSlowInEasing),
+        label = "protectionCard"
+    )
+    val iconTint by animateColorAsState(
+        targetValue = if (checked) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = tween(350, easing = FastOutSlowInEasing),
+        label = "protectionIcon"
+    )
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Filled.Security,
+                contentDescription = null,
+                tint = iconTint,
+                modifier = Modifier.size(22.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Anti-Tamper Protection",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Decompiled & modified rebuilds crash on launch",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onChange
+            )
         }
     }
 }

@@ -43,6 +43,53 @@ data class SignedHistory(
     val file: File
 )
 
+// --- Compare tool ---
+data class ApkCompareInfo(
+    val fileName: String,
+    val sizeStr: String,
+    val sha256: String,
+    val packageName: String,
+    val versionName: String,
+    val isSigned: Boolean,
+    val signatures: String,
+    val permissionCount: Int,
+    val entryCount: Int
+)
+
+data class CompareResult(
+    val apkA: ApkCompareInfo,
+    val apkB: ApkCompareInfo,
+    val added: List<String>,
+    val removed: List<String>,
+    val modified: List<String>,
+    val addedTotal: Int,
+    val removedTotal: Int,
+    val modifiedTotal: Int,
+    val identical: Boolean
+)
+
+// --- Split (xapk/apks) installer ---
+data class SplitApkEntry(
+    val fileName: String,
+    val path: String,
+    val sizeStr: String,
+    val isBase: Boolean
+)
+
+// --- Manifest viewer ---
+data class ManifestDetails(
+    val appName: String,
+    val packageName: String,
+    val versionName: String,
+    val versionCode: Int,
+    val minSdk: Int,
+    val targetSdk: Int,
+    val permissions: List<String>,
+    val entryCount: Int,
+    val sizeStr: String,
+    val sha256: String
+)
+
 data class MainState(
     val phase: AppPhase = AppPhase.IDLE,
     
@@ -92,7 +139,30 @@ data class MainState(
     val keygenState: String = "NY",
     val keygenCountryCode: String = "US",
     val isGeneratingKey: Boolean = false,
-    val keygenError: String? = null
+    val keygenError: String? = null,
+
+    // Compare tool
+    val compareA: Uri? = null,
+    val compareAName: String = "",
+    val compareB: Uri? = null,
+    val compareBName: String = "",
+    val isComparing: Boolean = false,
+    val compareResult: CompareResult? = null,
+
+    // Split (xapk/apks) tool
+    val splitApks: List<SplitApkEntry> = emptyList(),
+    val splitSessionDir: String = "",
+    val splitSignedDir: String = "",
+    val isProcessingSplits: Boolean = false,
+    val isSigningSplits: Boolean = false,
+    val splitStatus: String = "",
+
+    // Manifest viewer
+    val manifestDetails: ManifestDetails? = null,
+    val isLoadingManifest: Boolean = false,
+
+    // Anti-tamper protection switch
+    val protectEnabled: Boolean = false
 )
 
 class MainViewModel : ViewModel() {
@@ -556,6 +626,7 @@ class MainViewModel : ViewModel() {
                 customAlias = currentState.customAlias,
                 customKeyPass = currentState.customKeyPass,
                 customStorePass = currentState.customStorePass,
+                enableProtection = currentState.protectEnabled,
                 progressCallback = { step, progress, logMsg ->
                     _state.value = _state.value.copy(
                         currentStep = step,
@@ -613,6 +684,21 @@ class MainViewModel : ViewModel() {
             return
         }
         try {
+            // "Package conflicts / package exists" fix: same package er
+            // different-signature version install thakle age uninstall offer kori
+            val conflictPkg = findSignatureConflict(context, file)
+            if (conflictPkg != null) {
+                Toast.makeText(
+                    context,
+                    "Signature differs from the installed app. Uninstall it first, then install again.",
+                    Toast.LENGTH_LONG
+                ).show()
+                val uninstall = Intent(Intent.ACTION_DELETE, Uri.parse("package:$conflictPkg"))
+                uninstall.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(uninstall)
+                return
+            }
+
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -630,6 +716,30 @@ class MainViewModel : ViewModel() {
         } catch (e: Exception) {
             Toast.makeText(context, "Install failed: ${e.message}", Toast.LENGTH_LONG).show()
             Log.e("MainViewModel", "Install failed", e)
+        }
+    }
+
+    /** Installed same-package app er signature amar signed file er sathe milito kina — mismatch hole package name fire dey */
+    private fun findSignatureConflict(context: Context, file: File): String? {
+        return try {
+            val pm = context.packageManager
+            val archive = pm.getPackageArchiveInfo(
+                file.absolutePath,
+                android.content.pm.PackageManager.GET_SIGNATURES
+            ) ?: return null
+            val archiveSigs = archive.signatures ?: return null
+            val pkg = archive.packageName ?: return null
+            val installed = try {
+                pm.getPackageInfo(pkg, android.content.pm.PackageManager.GET_SIGNATURES)
+            } catch (e: Exception) {
+                null
+            } ?: return null
+            val installedSigs = installed.signatures ?: return null
+            val same = archiveSigs.size == installedSigs.size &&
+                    archiveSigs.zip(installedSigs).all { (a, b) -> a == b }
+            if (same) null else pkg
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -703,6 +813,382 @@ class MainViewModel : ViewModel() {
         } catch (e: Exception) {
             Toast.makeText(context, "Share failed: ${e.message}", Toast.LENGTH_LONG).show()
             Log.e("MainViewModel", "Share failed", e)
+        }
+    }
+
+    // ===================================================================
+    // COMPARE TOOL
+    // ===================================================================
+    fun selectCompareA(uri: Uri, name: String) {
+        _state.value = _state.value.copy(compareA = uri, compareAName = name, compareResult = null)
+    }
+
+    fun selectCompareB(uri: Uri, name: String) {
+        _state.value = _state.value.copy(compareB = uri, compareBName = name, compareResult = null)
+    }
+
+    fun clearComparison() {
+        _state.value = _state.value.copy(
+            compareA = null, compareAName = "",
+            compareB = null, compareBName = "",
+            compareResult = null, isComparing = false
+        )
+    }
+
+    fun runComparison(context: Context) {
+        val s = _state.value
+        val uriA = s.compareA ?: return
+        val uriB = s.compareB ?: return
+        _state.value = s.copy(isComparing = true, compareResult = null)
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val fileA = copyToCache(context, uriA, "cmp_a.apk")
+                    val fileB = copyToCache(context, uriB, "cmp_b.apk")
+                    val infoA = analyzeApk(context, fileA)
+                    val infoB = analyzeApk(context, fileB)
+                    val crcA = zipEntryCrcs(fileA)
+                    val crcB = zipEntryCrcs(fileB)
+                    val added = crcB.keys - crcA.keys
+                    val removed = crcA.keys - crcB.keys
+                    val modified = crcA.keys.intersect(crcB.keys).filter { crcA[it] != crcB[it] }
+                    CompareResult(
+                        apkA = infoA,
+                        apkB = infoB,
+                        added = added.sorted().take(150),
+                        removed = removed.sorted().take(150),
+                        modified = modified.sorted().take(150),
+                        addedTotal = added.size,
+                        removedTotal = removed.size,
+                        modifiedTotal = modified.size,
+                        identical = infoA.sha256 == infoB.sha256
+                    )
+                }
+                _state.value = _state.value.copy(isComparing = false, compareResult = result)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Comparison failed", e)
+                _state.value = _state.value.copy(isComparing = false)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Comparison failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun copyToCache(context: Context, uri: Uri, name: String): File {
+        val f = File(context.cacheDir, name)
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            f.outputStream().use { output -> input.copyTo(output) }
+        } ?: throw Exception("Could not read file")
+        return f
+    }
+
+    private fun analyzeApk(context: Context, file: File): ApkCompareInfo {
+        val pm = context.packageManager
+        val pi = pm.getPackageArchiveInfo(file.absolutePath, android.content.pm.PackageManager.GET_PERMISSIONS)
+
+        var isSigned = false
+        var sigInfo = "Unsigned"
+        try {
+            val vr = com.android.apksig.ApkVerifier.Builder(file).build().verify()
+            if (vr.isVerified || vr.isVerifiedUsingV1Scheme || vr.isVerifiedUsingV2Scheme || vr.isVerifiedUsingV3Scheme) {
+                isSigned = true
+                val schemes = mutableListOf<String>()
+                if (vr.isVerifiedUsingV1Scheme) schemes.add("V1")
+                if (vr.isVerifiedUsingV2Scheme) schemes.add("V2")
+                if (vr.isVerifiedUsingV3Scheme) schemes.add("V3")
+                if (vr.isVerifiedUsingV4Scheme) schemes.add("V4")
+                sigInfo = if (schemes.isNotEmpty()) "Signed (${schemes.joinToString(", ")})" else "Signed"
+            }
+        } catch (_: Exception) {
+        }
+
+        val entryCount = try {
+            java.util.zip.ZipFile(file).use { it.size() }
+        } catch (_: Exception) {
+            0
+        }
+
+        return ApkCompareInfo(
+            fileName = file.name,
+            sizeStr = formatFileSize(file.length()),
+            sha256 = sha256File(file),
+            packageName = pi?.packageName ?: "Unknown",
+            versionName = pi?.versionName ?: "N/A",
+            isSigned = isSigned,
+            signatures = sigInfo,
+            permissionCount = pi?.requestedPermissions?.size ?: 0,
+            entryCount = entryCount
+        )
+    }
+
+    private fun sha256File(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun zipEntryCrcs(file: File): Map<String, Long> {
+        val map = mutableMapOf<String, Long>()
+        java.util.zip.ZipFile(file).use { zf ->
+            val entries = zf.entries()
+            while (entries.hasMoreElements()) {
+                val e = entries.nextElement()
+                if (!e.isDirectory) map[e.name] = e.crc
+            }
+        }
+        return map
+    }
+
+    // ===================================================================
+    // SPLIT (XAPK/APKS) TOOL
+    // ===================================================================
+    fun loadSplitFile(context: Context, uri: Uri, name: String) {
+        _state.value = _state.value.copy(
+            isProcessingSplits = true,
+            splitStatus = "Reading $name...",
+            splitApks = emptyList(),
+            splitSessionDir = "",
+            splitSignedDir = ""
+        )
+        viewModelScope.launch {
+            val sessionDir = File(context.cacheDir, "split_session_${System.currentTimeMillis()}")
+            try {
+                val zipFile = File(context.cacheDir, "split_upload.zip")
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        zipFile.outputStream().use { output -> input.copyTo(output) }
+                    } ?: throw Exception("Could not read file")
+                    sessionDir.mkdirs()
+                    java.util.zip.ZipFile(zipFile).use { zf ->
+                        val entries = zf.entries()
+                        while (entries.hasMoreElements()) {
+                            val e = entries.nextElement()
+                            if (!e.isDirectory && e.name.endsWith(".apk", ignoreCase = true)) {
+                                val out = File(sessionDir, e.name.substringAfterLast('/'))
+                                zf.getInputStream(e).use { input ->
+                                    out.outputStream().use { output -> input.copyTo(output) }
+                                }
+                            }
+                        }
+                    }
+                    zipFile.delete()
+                }
+                val apks = sessionDir.listFiles()
+                    ?.filter { it.name.endsWith(".apk", ignoreCase = true) }
+                    ?.sortedByDescending { it.length() }
+                    ?: emptyList()
+
+                if (apks.isEmpty()) {
+                    sessionDir.deleteRecursively()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "No APK modules found inside this file", Toast.LENGTH_LONG).show()
+                    }
+                    _state.value = _state.value.copy(isProcessingSplits = false, splitStatus = "")
+                    return@launch
+                }
+
+                _state.value = _state.value.copy(
+                    isProcessingSplits = false,
+                    splitApks = apks.map {
+                        SplitApkEntry(
+                            fileName = it.name,
+                            path = it.absolutePath,
+                            sizeStr = formatFileSize(it.length()),
+                            isBase = it.name.startsWith("base", ignoreCase = true)
+                        )
+                    },
+                    splitSessionDir = sessionDir.absolutePath,
+                    splitStatus = "${apks.size} APK module(s) extracted — ready to install or sign"
+                )
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Split extraction failed", e)
+                sessionDir.deleteRecursively()
+                _state.value = _state.value.copy(
+                    isProcessingSplits = false,
+                    splitStatus = "Failed: ${e.message}"
+                )
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    fun signAllSplits(context: Context) {
+        val s = _state.value
+        if (s.splitApks.isEmpty()) return
+        _state.value = s.copy(isSigningSplits = true, splitStatus = "Signing splits...", splitSignedDir = "")
+        viewModelScope.launch {
+            try {
+                val baseName = (s.splitApks.firstOrNull { it.isBase } ?: s.splitApks.first())
+                    .fileName.substringBeforeLast(".")
+                val outDir = File(
+                    android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                    "SignedAPKs/${baseName}-split-signed"
+                )
+                if (!outDir.exists()) outDir.mkdirs()
+
+                var ok = 0
+                s.splitApks.forEachIndexed { index, entry ->
+                    val res = SignerEngine.signApkQuick(context, File(entry.path), File(outDir, entry.fileName))
+                    if (res.success) ok++
+                    _state.value = _state.value.copy(
+                        splitStatus = "Signing ${index + 1}/${s.splitApks.size}..."
+                    )
+                }
+
+                _state.value = _state.value.copy(
+                    isSigningSplits = false,
+                    splitSignedDir = outDir.absolutePath,
+                    splitStatus = "$ok/${s.splitApks.size} splits signed → ${outDir.absolutePath}"
+                )
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        if (ok == s.splitApks.size) "All splits signed successfully" else "Signed $ok of ${s.splitApks.size}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Split signing failed", e)
+                _state.value = _state.value.copy(isSigningSplits = false, splitStatus = "Sign failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Sign failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    /** Signed folder thakle seta install kore, na thakle extracted original gulo */
+    fun installSplits(context: Context) {
+        val s = _state.value
+        val dirPath = if (s.splitSignedDir.isNotEmpty()) s.splitSignedDir else s.splitSessionDir
+        if (dirPath.isEmpty()) return
+        val files = File(dirPath).listFiles()
+            ?.filter { it.name.endsWith(".apk", ignoreCase = true) }
+            ?.sortedByDescending { it.name.startsWith("base", ignoreCase = true) }
+            ?: return
+        if (files.isEmpty()) return
+        SplitInstaller.installApks(context, files)
+        Toast.makeText(context, "Install requested — confirm on the system dialog", Toast.LENGTH_LONG).show()
+    }
+
+    fun clearSplits() {
+        val s = _state.value
+        if (s.splitSessionDir.isNotEmpty()) {
+            File(s.splitSessionDir).deleteRecursively()
+        }
+        _state.value = s.copy(
+            splitApks = emptyList(), splitSessionDir = "", splitSignedDir = "",
+            isProcessingSplits = false, isSigningSplits = false, splitStatus = ""
+        )
+    }
+
+    // ===================================================================
+    // MANIFEST VIEWER
+    // ===================================================================
+    fun loadManifest(context: Context) {
+        val uri = _state.value.selectedApkUri ?: return
+        _state.value = _state.value.copy(isLoadingManifest = true, manifestDetails = null)
+        viewModelScope.launch {
+            try {
+                val details = withContext(Dispatchers.IO) {
+                    val f = copyToCache(context, uri, "manifest_temp.apk")
+                    val pm = context.packageManager
+                    val pi = pm.getPackageArchiveInfo(f.absolutePath, android.content.pm.PackageManager.GET_PERMISSIONS)
+                    val entryCount = try {
+                        java.util.zip.ZipFile(f).use { it.size() }
+                    } catch (_: Exception) {
+                        0
+                    }
+                    ManifestDetails(
+                        appName = pi?.applicationInfo?.loadLabel(pm)?.toString() ?: "Unknown",
+                        packageName = pi?.packageName ?: "Unknown",
+                        versionName = pi?.versionName ?: "N/A",
+                        versionCode = pi?.versionCode ?: 0,
+                        minSdk = pi?.applicationInfo?.minSdkVersion ?: 0,
+                        targetSdk = pi?.applicationInfo?.targetSdkVersion ?: 0,
+                        permissions = pi?.requestedPermissions?.toList() ?: emptyList(),
+                        entryCount = entryCount,
+                        sizeStr = formatFileSize(f.length()),
+                        sha256 = sha256File(f)
+                    )
+                }
+                _state.value = _state.value.copy(isLoadingManifest = false, manifestDetails = details)
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Manifest load failed", e)
+                _state.value = _state.value.copy(isLoadingManifest = false)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Manifest load failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    // ===================================================================
+    // PROTECTION SWITCH + HISTORY PERSISTENCE
+    // ===================================================================
+    fun setProtection(enabled: Boolean) {
+        _state.value = _state.value.copy(protectEnabled = enabled)
+    }
+
+    /**
+     * App start e storage theke ager signed APK gulo history te load kore.
+     * Primary: /storage/emulated/0/SignedAPKs, legacy: Download/SignedAPKs.
+     */
+    fun loadHistoryFromDisk(context: Context) {
+        if (_state.value.history.isNotEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val dirs = listOf(
+                    File(android.os.Environment.getExternalStorageDirectory(), "SignedAPKs"),
+                    File(
+                        android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                        "SignedAPKs"
+                    )
+                )
+                val files = dirs
+                    .flatMap { d -> d.listFiles()?.filter { it.isFile && it.name.endsWith(".apk", ignoreCase = true) }?.toList() ?: emptyList() }
+                    .sortedByDescending { it.lastModified() }
+                if (files.isNotEmpty()) {
+                    _state.value = _state.value.copy(
+                        history = files.map { SignedHistory(it.name, it.absolutePath, it) }
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "History load failed", e)
+            }
+        }
+    }
+
+    /** History theke delete + storage thekeo file ta permanently delete */
+    fun deleteHistoryItem(context: Context, item: SignedHistory) {
+        viewModelScope.launch {
+            var fileDeleted = false
+            try {
+                withContext(Dispatchers.IO) {
+                    fileDeleted = item.file.delete()
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Delete failed", e)
+            }
+            _state.value = _state.value.copy(
+                history = _state.value.history.filter { it.path != item.path }
+            )
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    context,
+                    if (fileDeleted) "Deleted: ${item.fileName}" else "Removed from history (file could not be deleted)",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
 }

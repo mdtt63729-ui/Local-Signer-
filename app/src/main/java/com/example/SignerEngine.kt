@@ -39,6 +39,7 @@ object SignerEngine {
         customAlias: String = "",
         customKeyPass: String = "",
         customStorePass: String = "",
+        enableProtection: Boolean = false,
         progressCallback: ((step: String, progress: Int, log: String) -> Unit)? = null
     ): SignResult = withContext(Dispatchers.IO) {
         try {
@@ -58,6 +59,12 @@ object SignerEngine {
             progressCallback?.invoke("Keystore Loaded", 30, "[SUCCESS] Key loaded successfully.")
             kotlinx.coroutines.delay(400)
 
+            // Signature guard er expected certificate — jei key diye sign korbo
+            // tar DER er Base64 (runtime e Signature.toByteArray() er shathe match hoy)
+            val expectedCertBase64 = android.util.Base64.encodeToString(
+                cert.encoded, android.util.Base64.NO_WRAP
+            )
+
             // 2. Prepare Input File
             progressCallback?.invoke("Validating Unsigned APK...", 40, "[INFO] Copying input APK to cache...")
             val inputFile = File(context.cacheDir, "temp_input.apk")
@@ -69,35 +76,56 @@ object SignerEngine {
             progressCallback?.invoke("Input APK Ready", 50, "[SUCCESS] Input APK cached successfully.")
             kotlinx.coroutines.delay(400)
 
-            // 3. Prepare Output File
-            progressCallback?.invoke("Aligning Zip Entries (ZipFlinger)...", 60, "[INFO] Aligning ZIP entries to 4-byte boundaries...")
-            val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-            val outputDir = File(downloadsDir, "SignedAPKs")
-            if (!outputDir.exists()) outputDir.mkdirs()
-            
+            // 3. Anti-tamper protection (optional)
+            var fileToAlign = inputFile
+            if (enableProtection) {
+                progressCallback?.invoke("Applying Anti-Tamper Protection...", 45, "[PROTECT] Disassembling application dex...")
+                val protResult = ProtectionEngine.protect(context, inputFile, expectedCertBase64) { msg ->
+                    progressCallback?.invoke("Applying Protection...", 50, "[PROTECT] $msg")
+                }
+                if (!protResult.success || protResult.outputFile == null) {
+                    return@withContext SignResult(false, null, "Protection failed: ${protResult.message}")
+                }
+                fileToAlign = protResult.outputFile
+                progressCallback?.invoke("Protection Applied", 60, "[SUCCESS] Anti-tamper guard injected — modified rebuilds will crash.")
+                kotlinx.coroutines.delay(400)
+            }
+
+            // 4. Output folders — primary: storage root /SignedAPKs, fallback: Download/SignedAPKs
+            val primaryDir = File(android.os.Environment.getExternalStorageDirectory(), "SignedAPKs")
+            val fallbackDir = File(
+                android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS),
+                "SignedAPKs"
+            )
+            if (!primaryDir.exists()) primaryDir.mkdirs()
+            if (!fallbackDir.exists()) fallbackDir.mkdirs()
+
             val originalName = getFileName(context, inputUri) ?: "app.apk"
             val baseName = originalName.substringBeforeLast(".")
-            
-            val alignedFile = File(context.cacheDir, "aligned.apk")
-            alignApk(inputFile, alignedFile)
-            progressCallback?.invoke("Zipalign Complete", 70, "[SUCCESS] APK aligned successfully.")
-            kotlinx.coroutines.delay(400)
-            
-            // Auto-rename: same name e already file thakle (1), (2)... suffix diye unique name
-            var outputFile = File(outputDir, "$baseName-signed.apk")
-            if (outputFile.exists()) {
-                var counter = 1
-                while (outputFile.exists()) {
-                    outputFile = File(outputDir, "$baseName-signed ($counter).apk")
-                    counter++
-                }
-                progressCallback?.invoke("Output Path Ready", 75, "[INFO] Same name already exists — auto-renamed to: ${outputFile.name}")
-            } else {
-                progressCallback?.invoke("Output Path Ready", 75, "[INFO] Target output: ${outputFile.name}")
-            }
-            kotlinx.coroutines.delay(400)
 
-            // 4. Sign using com.android.apksig
+            val alignedFile = File(context.cacheDir, "aligned.apk")
+            alignApk(fileToAlign, alignedFile)
+            progressCallback?.invoke("Preparing Output", 70, "[SUCCESS] APK prepared successfully.")
+            kotlinx.coroutines.delay(300)
+
+            // Auto-rename: same name e already file thakle (1), (2)... suffix diye unique name
+            fun uniqueOutput(dir: File): File {
+                var f = File(dir, "$baseName-signed.apk")
+                if (f.exists()) {
+                    var counter = 1
+                    while (f.exists()) {
+                        f = File(dir, "$baseName-signed ($counter).apk")
+                        counter++
+                    }
+                }
+                return f
+            }
+
+            var outputFile = uniqueOutput(primaryDir)
+            progressCallback?.invoke("Signing (V1 + V2 + V3)...", 80, "[INFO] Output: ${outputFile.absolutePath}")
+            kotlinx.coroutines.delay(300)
+
+            // 5. Sign using com.android.apksig
             progressCallback?.invoke("Applying V1, V2 & V3 Signatures (ApkSigner)...", 80, "[RUNNING] Digesting MANIFEST.MF and generating signatures...")
             val signerConfig = ApkSigner.SignerConfig.Builder(
                 "CERT",
@@ -105,21 +133,23 @@ object SignerEngine {
                 listOf(cert)
             ).build()
 
-            val signer = ApkSigner.Builder(listOf(signerConfig))
-                .setInputApk(alignedFile)
-                .setOutputApk(outputFile)
-                .setV1SigningEnabled(true)
-                .setV2SigningEnabled(true)
-                .setV3SigningEnabled(true)
-                .build()
+            try {
+                buildSigner(alignedFile, outputFile, signerConfig).sign()
+            } catch (e: Exception) {
+                // Root folder e write permission na thakle Download folder e fallback
+                progressCallback?.invoke("Retrying in Downloads...", 80, "[WARN] Root folder not writable — saving to Download/SignedAPKs")
+                outputFile.delete()
+                outputFile = uniqueOutput(fallbackDir)
+                buildSigner(alignedFile, outputFile, signerConfig).sign()
+                progressCallback?.invoke("Saved to Downloads", 80, "[INFO] Output: ${outputFile.absolutePath}")
+            }
 
-            signer.sign()
-            
             progressCallback?.invoke("Verifying Output APK Integrity...", 90, "[INFO] Verifying generated signatures...")
             kotlinx.coroutines.delay(600)
-            
+
             // Clean up temp
             if (inputFile.exists()) inputFile.delete()
+            if (fileToAlign != inputFile && fileToAlign.exists()) fileToAlign.delete()
             
             progressCallback?.invoke("Process Complete!", 100, "[SUCCESS] APK signed successfully! Saved to: ${outputFile.absolutePath}")
             kotlinx.coroutines.delay(400)
@@ -131,6 +161,40 @@ object SignerEngine {
             return@withContext SignResult(false, null, e.message ?: "Unknown error")
         }
     }
+
+    /**
+     * Fast single-file signing (split APK er jonno) — kono artificial delay nei,
+     * embedded default keystore diye V1+V2+V3 sign kore.
+     */
+    suspend fun signApkQuick(context: Context, inputFile: File, outputFile: File): SignResult =
+        withContext(Dispatchers.IO) {
+            try {
+                val (privateKey, cert) = loadOrCreateDefaultKey(context)
+                val signerConfig = ApkSigner.SignerConfig.Builder("CERT", privateKey, listOf(cert)).build()
+                val signer = ApkSigner.Builder(listOf(signerConfig))
+                    .setInputApk(inputFile)
+                    .setOutputApk(outputFile)
+                    .setV1SigningEnabled(true)
+                    .setV2SigningEnabled(true)
+                    .setV3SigningEnabled(true)
+                    .build()
+                signer.sign()
+                SignResult(true, outputFile)
+            } catch (e: Exception) {
+                Log.e("SignerEngine", "Quick sign failed: ${inputFile.name}", e)
+                SignResult(false, null, e.message)
+            }
+        }
+
+    /** V1+V2+V3 signer builder — reuse er jonno */
+    private fun buildSigner(input: File, output: File, signerConfig: ApkSigner.SignerConfig): ApkSigner =
+        ApkSigner.Builder(listOf(signerConfig))
+            .setInputApk(input)
+            .setOutputApk(output)
+            .setV1SigningEnabled(true)
+            .setV2SigningEnabled(true)
+            .setV3SigningEnabled(true)
+            .build()
 
     private fun loadCustomKey(
         context: Context,

@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.localapksigner.hxmwqa"
     minSdk = 24
     targetSdk = 36
-    versionCode = 5
-    versionName = "1.4"
+    versionCode = 7
+    versionName = "1.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -73,6 +73,8 @@ dependencies {
   // implementation(libs.androidx.camera.view)
   implementation(libs.apksig)
   implementation(libs.zipflinger)
+  implementation(libs.smali.lib)
+  implementation(libs.smali.baksmali)
   implementation(libs.bouncycastle)
   implementation(libs.bcpkix)
   implementation(libs.androidx.compose.material.icons.core)
