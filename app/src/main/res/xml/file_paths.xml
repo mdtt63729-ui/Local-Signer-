@@ -6,4 +6,7 @@
     <external-path name="public_download" path="Download/" />
     <!-- Internal cache -->
     <cache-path name="cache" path="." />
+    <!-- Safety net: installed app APKs /data/app/ emon jayga onno kono
+         root cover na korle o crash na hoy -->
+    <root-path name="root" path="." />
 </paths>

@@ -49,6 +49,9 @@ data class MainState(
     // Suite States
     val installedApps: List<InstalledApp> = emptyList(),
     val isLoadingApps: Boolean = false,
+    val isExtracting: Boolean = false,
+    val extractProgress: Float = 0f,
+    val extractingAppName: String = "",
     val manifestContent: String = "",
     val clonePackageName: String = "",
     val cloneAppName: String = "",
@@ -129,6 +132,55 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Installed app er APK /data/app/ theke cache e copy kore (live progress shoho),
+     * tarpor sei copy ta scan+sign flow te pathay.
+     * Direct /data/app URI FileProvider diye share kora jay na — tai cache e copy korte hoi.
+     */
+    fun extractAndSelectApp(context: Context, app: InstalledApp) {
+        if (_state.value.isExtracting) return
+        _state.value = _state.value.copy(
+            isExtracting = true,
+            extractProgress = 0f,
+            extractingAppName = app.appName
+        )
+        viewModelScope.launch {
+            try {
+                val src = File(app.apkPath)
+                val dest = File(context.cacheDir, "extracted_${System.currentTimeMillis()}.apk")
+                val total = src.length().coerceAtLeast(1L)
+                var done = 0L
+                var lastReported = 0L
+                withContext(Dispatchers.IO) {
+                    src.inputStream().use { input ->
+                        dest.outputStream().use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read <= 0) break
+                                output.write(buffer, 0, read)
+                                done += read
+                                // Prottek ~1MB por progress update (r UI thread e bar bar hit kore na)
+                                if (done - lastReported >= 1024 * 1024 || done >= total) {
+                                    lastReported = done
+                                    _state.value = _state.value.copy(extractProgress = done.toFloat() / total)
+                                }
+                            }
+                        }
+                    }
+                }
+                _state.value = _state.value.copy(isExtracting = false, extractProgress = 0f)
+                val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", dest)
+                selectApk(context, uri, "${app.appName}.apk", app.size)
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(isExtracting = false, extractProgress = 0f)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "Extraction failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     fun generateKeystore(context: Context) {
         val s = _state.value
         if (s.keygenPass.length < 6) {
@@ -181,6 +233,130 @@ class MainViewModel : ViewModel() {
     }
 
     fun selectApk(context: Context, uri: Uri, name: String, sizeStr: String) {
+        if (name.endsWith(".zip", ignoreCase = true)) {
+            selectFromZip(context, uri, name, sizeStr)
+        } else {
+            beginScan(context, uri, name, sizeStr)
+        }
+    }
+
+    /**
+     * ZIP upload flow: cache e ZIP copy kore, vitorer largest APK extract kore,
+     * tarpor uploaded ZIP ta PERMANENTLY delete kore — scan+sign shudhu APK te chole.
+     */
+    private fun selectFromZip(context: Context, uri: Uri, zipName: String, sizeStr: String) {
+        _state.value = _state.value.copy(
+            selectedApkUri = uri,
+            selectedApkName = zipName,
+            selectedApkSize = sizeStr,
+            signError = null,
+            phase = AppPhase.SCANNING,
+            scanProgress = 0.05f,
+            scanLogs = listOf(
+                "[INFO] ZIP archive detected: $zipName",
+                "[INFO] Extracting and inspecting archive..."
+            )
+        )
+
+        viewModelScope.launch {
+            val zipFile = File(context.cacheDir, "upload_${System.currentTimeMillis()}.zip")
+            try {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        zipFile.outputStream().use { output -> input.copyTo(output) }
+                    } ?: throw Exception("Could not read the ZIP file")
+                }
+                updateScanProgress(0.25f)
+                addScanLog("[INFO] Locating APK inside ZIP...")
+
+                // Vitorer sob .apk entry khuje sobcheye boro ta bechhe nei
+                var apkEntry: java.util.zip.ZipEntry? = null
+                var apkCount = 0
+                withContext(Dispatchers.IO) {
+                    java.util.zip.ZipFile(zipFile).use { zf ->
+                        val entries = zf.entries()
+                        while (entries.hasMoreElements()) {
+                            val e = entries.nextElement()
+                            if (!e.isDirectory && e.name.endsWith(".apk", ignoreCase = true)) {
+                                apkCount++
+                                if (apkEntry == null || e.size > apkEntry!!.size) apkEntry = e
+                            }
+                        }
+                    }
+                }
+
+                if (apkEntry == null) {
+                    addScanLog("[ERROR] No APK found inside this ZIP.")
+                    delay(1200)
+                    zipFile.delete()
+                    withContext(Dispatchers.Main) {
+                        Toast.makeText(context, "No APK found inside the ZIP", Toast.LENGTH_LONG).show()
+                    }
+                    resetApkSelection()
+                    return@launch
+                }
+
+                addScanLog(
+                    if (apkCount > 1) "[SUCCESS] ${apkCount} APKs found — picking largest: ${apkEntry!!.name}"
+                    else "[SUCCESS] APK found: ${apkEntry!!.name}"
+                )
+                updateScanProgress(0.50f)
+
+                // APK ta cache e extract kori — file name = zip er vitorker asol name
+                // (jate sign korar por output "MyApp-signed.apk" hoy)
+                val entryFileName = apkEntry!!.name.substringAfterLast('/').ifEmpty { "extracted.apk" }
+                val extracted = File(context.cacheDir, entryFileName)
+                withContext(Dispatchers.IO) {
+                    java.util.zip.ZipFile(zipFile).use { zf ->
+                        zf.getInputStream(zf.getEntry(apkEntry!!.name)).use { input ->
+                            extracted.outputStream().use { output -> input.copyTo(output) }
+                        }
+                    }
+                }
+                updateScanProgress(0.70f)
+                addScanLog("[SUCCESS] APK extracted: $entryFileName")
+
+                // Uploaded ZIP ta permanent delete
+                val deleted = withContext(Dispatchers.IO) { zipFile.delete() }
+                if (deleted) addScanLog("[INFO] Uploaded ZIP deleted from cache.")
+
+                val apkUri = FileProvider.getUriForFile(
+                    context, "${context.packageName}.fileprovider", extracted
+                )
+                beginScan(
+                    context = context,
+                    uri = apkUri,
+                    name = entryFileName,
+                    sizeStr = formatFileSize(extracted.length()),
+                    initialLogs = _state.value.scanLogs + "[INFO] Initializing Security Scanner..."
+                )
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "ZIP extraction failed", e)
+                zipFile.delete()
+                addScanLog("[ERROR] ${e.message}")
+                delay(1200)
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(context, "ZIP failed: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+                resetApkSelection()
+            }
+        }
+    }
+
+    private fun formatFileSize(size: Long): String {
+        if (size <= 0) return "0 B"
+        val units = arrayOf("B", "KB", "MB", "GB")
+        val digitGroups = (Math.log10(size.toDouble()) / Math.log10(1024.0)).toInt()
+        return java.text.DecimalFormat("#,##0.#").format(size / Math.pow(1024.0, digitGroups.toDouble())) + " " + units[digitGroups]
+    }
+
+    private fun beginScan(
+        context: Context,
+        uri: Uri,
+        name: String,
+        sizeStr: String,
+        initialLogs: List<String> = listOf("[INFO] Initializing Security Scanner...")
+    ) {
         _state.value = _state.value.copy(
             selectedApkUri = uri,
             selectedApkName = name,
@@ -188,7 +364,7 @@ class MainViewModel : ViewModel() {
             signError = null,
             phase = AppPhase.SCANNING,
             scanProgress = 0f,
-            scanLogs = listOf("[INFO] Initializing Security Scanner...")
+            scanLogs = initialLogs
         )
 
         viewModelScope.launch {
@@ -454,6 +630,52 @@ class MainViewModel : ViewModel() {
         } catch (e: Exception) {
             Toast.makeText(context, "Install failed: ${e.message}", Toast.LENGTH_LONG).show()
             Log.e("MainViewModel", "Install failed", e)
+        }
+    }
+
+    /**
+     * History theke kono signed APK manually rename kore.
+     * Validation: illegal char remove, duplicate name block, on-disk rename + history update.
+     */
+    fun renameHistoryItem(context: Context, item: SignedHistory, rawName: String) {
+        // .sdk suffix thakle hataiye dao, illegal filename character gulo _ diye replace
+        val cleaned = rawName.trim()
+            .removeSuffix(".apk")
+            .replace(Regex("[\\/:*?\"<>|]"), "_")
+            .trim()
+
+        if (cleaned.isEmpty()) {
+            Toast.makeText(context, "Name can't be empty", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (cleaned == item.fileName.removeSuffix(".apk")) return
+
+        val dir = item.file.parentFile
+        if (dir == null) {
+            Toast.makeText(context, "Rename failed: folder not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val newFile = File(dir, "$cleaned.apk")
+        if (newFile.exists()) {
+            Toast.makeText(context, "A file named \"$cleaned.apk\" already exists", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val success = try {
+            item.file.renameTo(newFile)
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Rename failed", e)
+            false
+        }
+        if (success) {
+            _state.value = _state.value.copy(
+                history = _state.value.history.map {
+                    if (it.path == item.path) SignedHistory(newFile.name, newFile.absolutePath, newFile) else it
+                }
+            )
+            Toast.makeText(context, "Renamed to ${newFile.name}", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "Rename failed — try a different name", Toast.LENGTH_LONG).show()
         }
     }
 

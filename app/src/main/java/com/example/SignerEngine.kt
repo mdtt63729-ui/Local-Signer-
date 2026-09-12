@@ -83,8 +83,18 @@ object SignerEngine {
             progressCallback?.invoke("Zipalign Complete", 70, "[SUCCESS] APK aligned successfully.")
             kotlinx.coroutines.delay(400)
             
-            val outputFile = File(outputDir, "$baseName-signed.apk")
-            progressCallback?.invoke("Output Path Ready", 75, "[INFO] Target output: ${outputFile.name}")
+            // Auto-rename: same name e already file thakle (1), (2)... suffix diye unique name
+            var outputFile = File(outputDir, "$baseName-signed.apk")
+            if (outputFile.exists()) {
+                var counter = 1
+                while (outputFile.exists()) {
+                    outputFile = File(outputDir, "$baseName-signed ($counter).apk")
+                    counter++
+                }
+                progressCallback?.invoke("Output Path Ready", 75, "[INFO] Same name already exists — auto-renamed to: ${outputFile.name}")
+            } else {
+                progressCallback?.invoke("Output Path Ready", 75, "[INFO] Target output: ${outputFile.name}")
+            }
             kotlinx.coroutines.delay(400)
 
             // 4. Sign using com.android.apksig

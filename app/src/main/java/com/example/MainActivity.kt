@@ -16,6 +16,7 @@ import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -35,6 +36,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -50,11 +52,14 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -66,15 +71,19 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.FilePresent
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.InstallMobile
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -109,6 +118,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
@@ -123,6 +133,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -131,6 +144,7 @@ import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.TerminalGreen
 import kotlinx.coroutines.delay
 import java.io.File
+import kotlin.random.Random
 import java.text.DecimalFormat
 
 // ---------------------------------------------------------------------------
@@ -399,10 +413,20 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     IdleScreen(
                         state = state,
                         haptic = haptic,
-                        onSelectApk = { apkPickerLauncher.launch(arrayOf("application/vnd.android.package-archive")) },
+                        onSelectApk = {
+                            apkPickerLauncher.launch(
+                                arrayOf(
+                                    "application/vnd.android.package-archive",
+                                    "application/zip",
+                                    "application/x-zip-compressed",
+                                    "application/octet-stream"
+                                )
+                            )
+                        },
                         onNavigatePhase = { viewModel.navigateToPhase(it) },
                         onInstall = { viewModel.installApk(context, it) },
-                        onShare = { viewModel.shareApk(context, it) }
+                        onShare = { viewModel.shareApk(context, it) },
+                        onRename = { item, name -> viewModel.renameHistoryItem(context, item, name) }
                     )
                 }
                 AppPhase.SCANNING -> {
@@ -611,10 +635,14 @@ fun IdleScreen(
     onSelectApk: () -> Unit,
     onNavigatePhase: (AppPhase) -> Unit,
     onInstall: (File) -> Unit,
-    onShare: (File) -> Unit
+    onShare: (File) -> Unit,
+    onRename: (SignedHistory, String) -> Unit
 ) {
     val context = LocalContext.current
+    // Manual rename er jonno jei history item select kora ache
+    var renamingItem by remember { mutableStateOf<SignedHistory?>(null) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -689,7 +717,7 @@ fun IdleScreen(
                 ) {
                     Icon(Icons.Filled.FilePresent, contentDescription = null, modifier = Modifier.size(26.dp))
                     Spacer(Modifier.width(12.dp))
-                    Text("Select Unsigned APK", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Select APK or ZIP File", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -841,20 +869,22 @@ fun IdleScreen(
                                 Text("Share")
                             }
                             Spacer(modifier = Modifier.width(4.dp))
-                            TextButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                                            as android.content.ClipboardManager
-                                    clipboard.setPrimaryClip(
-                                        android.content.ClipData.newPlainText("path", historyItem.path)
-                                    )
-                                    Toast.makeText(context, "Path copied: ${historyItem.path}", Toast.LENGTH_SHORT).show()
-                                }
-                            ) {
-                                Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Locate")
+                            IconButton(onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                        as android.content.ClipboardManager
+                                clipboard.setPrimaryClip(
+                                    android.content.ClipData.newPlainText("path", historyItem.path)
+                                )
+                                Toast.makeText(context, "Path copied: ${historyItem.path}", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Filled.FolderOpen, contentDescription = "Locate", modifier = Modifier.size(20.dp))
+                            }
+                            IconButton(onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                renamingItem = historyItem
+                            }) {
+                                Icon(Icons.Filled.DriveFileRenameOutline, contentDescription = "Rename", modifier = Modifier.size(20.dp))
                             }
                         }
                     }
@@ -863,6 +893,65 @@ fun IdleScreen(
         }
         item { Spacer(modifier = Modifier.height(48.dp)) }
     }
+    } // Box close
+
+    // Rename dialog — manually history item rename korar jonno
+    renamingItem?.let { item ->
+        RenameApkDialog(
+            initialName = item.fileName,
+            onConfirm = { newName ->
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onRename(item, newName)
+                renamingItem = null
+            },
+            onDismiss = { renamingItem = null }
+        )
+    }
+}
+
+@Composable
+private fun RenameApkDialog(
+    initialName: String,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf(initialName.removeSuffix(".apk")) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename APK") },
+        text = {
+            Column {
+                Text(
+                    "Enter a new name for this signed APK.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = newName,
+                    onValueChange = { newName = it },
+                    singleLine = true,
+                    label = { Text("File name") },
+                    suffix = { Text(".apk") },
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(newName) },
+                enabled = newName.isNotBlank()
+            ) {
+                Text("Rename")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
 
 @Composable
@@ -915,56 +1004,259 @@ private fun ToolRow(
     }
 }
 
+// Scanning screen — matrix terminal + Material 3
 // ---------------------------------------------------------------------------
-// Scanning screen — premium radar + animated progress + terminal
+// Scanning screen — matrix terminal + Material 3
 // ---------------------------------------------------------------------------
+private const val RAIN_CHARS = "アイウエオカキクケコサシスセソ0123456789ABCDEF"
+
+private class RainColumnData(val chars: String, val speed: Float, val phase: Float)
+
+/** Matrix digital-rain background — canvas e falling green glyphs (smooth, loop-safe) */
+@Composable
+fun MatrixRain(modifier: Modifier = Modifier, rainColor: Color = TerminalGreen) {
+    val textMeasurer = rememberTextMeasurer()
+    val columns = remember {
+        List(26) {
+            val count = (8..14).random()
+            RainColumnData(
+                chars = (0 until count).map { RAIN_CHARS.random() }.joinToString(""),
+                // integer speed → animation wrap e kono jump hoy na
+                speed = if ((0..1).random() == 0) 1f else 2f,
+                phase = Random.nextFloat()
+            )
+        }
+    }
+    val t by rememberInfiniteTransition(label = "matrixRain").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(16000, easing = LinearEasing)),
+        label = "matrixT"
+    )
+    Canvas(modifier = modifier) {
+        val charH = 20.dp.toPx()
+        val colW = charH * 0.95f
+        val nCols = (size.width / colW).toInt().coerceIn(1, columns.size)
+        for (i in 0 until nCols) {
+            val col = columns[i]
+            val travel = size.height + col.chars.length * charH
+            val headY = ((t * col.speed + col.phase) % 1f) * travel - charH
+            col.chars.forEachIndexed { idx, c ->
+                val y = headY - idx * charH
+                if (y > -charH && y < size.height) {
+                    drawText(
+                        textMeasurer = textMeasurer,
+                        text = c.toString(),
+                        topLeft = Offset(i * colW, y),
+                        style = TextStyle(
+                            color = rainColor.copy(alpha = (1f - idx.toFloat() / col.chars.length) * 0.5f),
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Terminal log er color — ERROR red, WARN amber, baki green */
+private fun matrixLogColor(log: String): Color = when {
+    log.contains("[ERROR]") -> Color(0xFFFF5252)
+    log.contains("[WARN]") -> Color(0xFFFFC400)
+    else -> TerminalGreen
+}
+
 @Composable
 fun ScanningScreen(state: MainState) {
+    // iOS-smooth: no-bounce critically damped spring
     val animatedProgress by animateFloatAsState(
         targetValue = state.scanProgress,
-        animationSpec = tween(400, easing = FastOutSlowInEasing),
+        animationSpec = spring(dampingRatio = 1f, stiffness = 380f),
         label = "scanProgress"
     )
+    // Blinking cursor
+    val cursorAlpha by rememberInfiniteTransition(label = "cursor").animateFloat(
+        initialValue = 1f,
+        targetValue = 0.1f,
+        animationSpec = infiniteRepeatable(tween(550, easing = LinearEasing), RepeatMode.Reverse),
+        label = "cursorAlpha"
+    )
+    val logListState = rememberLazyListState()
+    LaunchedEffect(state.scanLogs.size) {
+        if (state.scanLogs.isNotEmpty()) {
+            logListState.animateScrollToItem(state.scanLogs.size - 1)
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 16.dp)
     ) {
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        Text(
-            "Scanning: ${state.selectedApkName}",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        Text(
-            "Size: ${state.selectedApkSize}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-        )
+        // Header — file + size chip
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Filled.FolderZip,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "SECURITY SCAN",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    letterSpacing = 2.sp
+                )
+                Text(
+                    state.selectedApkName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant
+            ) {
+                Text(
+                    state.selectedApkSize,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                )
+            }
+        }
 
-        Spacer(modifier = Modifier.height(48.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        RadarAnimation()
+        // Matrix terminal — puro screen jure
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            shape = MaterialTheme.shapes.large,
+            color = Color(0xFF030A05),
+            border = BorderStroke(1.dp, TerminalGreen.copy(alpha = 0.25f))
+        ) {
+            Box {
+                // Digital rain background
+                MatrixRain(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .alpha(0.20f)
+                )
+                Column {
+                    // Terminal title bar — macOS style traffic lights
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                            Box(
+                                Modifier
+                                    .size(9.dp)
+                                    .background(Color(0xFFFF5F57), CircleShape)
+                            )
+                            Box(
+                                Modifier
+                                    .size(9.dp)
+                                    .background(Color(0xFFFEBC2E), CircleShape)
+                            )
+                            Box(
+                                Modifier
+                                    .size(9.dp)
+                                    .background(Color(0xFF28C840), CircleShape)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            "root@signer:~# security-scan",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = TerminalGreen.copy(alpha = 0.65f),
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "${(animatedProgress * 100).toInt()}%",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TerminalGreen
+                        )
+                    }
 
-        Spacer(modifier = Modifier.height(32.dp))
+                    // Logs
+                    LazyColumn(
+                        state = logListState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 14.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        items(state.scanLogs) { log ->
+                            Text(
+                                log,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                color = matrixLogColor(log)
+                            )
+                        }
+                        // Input line — blinking cursor
+                        item {
+                            Row {
+                                Text(
+                                    "> ",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = TerminalGreen
+                                )
+                                Text(
+                                    "▊",
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    color = TerminalGreen.copy(alpha = cursorAlpha)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
-        Text(
-            "Deep Scanning Dex Files & Permissions...",
-            style = MaterialTheme.typography.bodyLarge,
-            fontWeight = FontWeight.SemiBold
-        )
+        Spacer(modifier = Modifier.height(16.dp))
 
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("Progress", fontWeight = FontWeight.Bold)
+        // Progress — M3
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "Deep Scanning Dex & Permissions",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
             Text(
                 "${(animatedProgress * 100).toInt()}%",
+                style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
             )
@@ -979,50 +1271,10 @@ fun ScanningScreen(state: MainState) {
             color = MaterialTheme.colorScheme.primary,
             trackColor = MaterialTheme.colorScheme.primaryContainer
         )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        // Terminal logs
-        val logListState = rememberLazyListState()
-        LaunchedEffect(state.scanLogs.size) {
-            if (state.scanLogs.isNotEmpty()) {
-                logListState.animateScrollToItem(state.scanLogs.size - 1)
-            }
-        }
-
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            shape = MaterialTheme.shapes.large,
-            color = Color(0xFF0D1117),
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-        ) {
-            LazyColumn(
-                state = logListState,
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                item {
-                    Text(
-                        "> Security Scanner Output...",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-                }
-                items(state.scanLogs) { log ->
-                    Text(
-                        log,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 12.sp,
-                        color = TerminalGreen
-                    )
-                }
-            }
-        }
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
+
 
 // ---------------------------------------------------------------------------
 // Config screen
@@ -1036,165 +1288,17 @@ fun ConfigScreen(
     haptic: HapticFeedback,
     context: Context
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(24.dp)
-    ) {
-        item { Spacer(modifier = Modifier.height(8.dp)) }
-
-        // 1. APK Details
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.large,
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                ),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Filled.VerifiedUser,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(32.dp)
-                        )
-                        Spacer(modifier = Modifier.width(16.dp))
-                        Column {
-                            Text(
-                                "Target Details:",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                state.selectedApkName,
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    if (state.isApkSigned) {
-                        Text(
-                            "Status: ${state.apkSignatures}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.Bold
-                        )
-                    } else {
-                        Text(
-                            "Status: Unsigned (Ready)",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (state.manifestPackageName.isNotEmpty()) {
-                        Text("Package: ${state.manifestPackageName}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                        Text("Version: ${state.manifestVersionName}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                        Spacer(modifier = Modifier.height(8.dp))
-                    }
-
-                    Text("Size: ${state.selectedApkSize}", style = MaterialTheme.typography.bodySmall)
-                    if (state.selectedApkHash.isNotEmpty()) {
-                        Text(
-                            "SHA-256: ${state.selectedApkHash}",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    if (!state.isSigning) {
-                        Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedButton(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.resetApkSelection()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Text("Change APK File")
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Utility Suite Options
-        item {
-            if (!state.isSigning) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = MaterialTheme.shapes.large,
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                    ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(24.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Filled.Build,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.size(28.dp)
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text(
-                                "Modification & Utilities",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    viewModel.navigateToPhase(AppPhase.MANIFEST_VIEWER)
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Manifest", maxLines = 1)
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    viewModel.navigateToPhase(AppPhase.APP_CLONER)
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Cloner", maxLines = 1)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Keystore Config or Signing Progress
-        item {
+    // Compact layout: content upore (scan hobe khub kom), SIGN button
+    // bottom e FIXED — kono scroll chara'i puro screen dekha jay.
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Spacer(modifier = Modifier.height(4.dp))
             AnimatedContent(
                 targetState = state.isSigning,
                 transitionSpec = {
@@ -1205,218 +1309,24 @@ fun ConfigScreen(
                 label = "KeystoreOrProgress"
             ) { signing ->
                 if (!signing) {
-                    // Keystore Config
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = MaterialTheme.shapes.large,
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                        ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    ) {
-                        Column(modifier = Modifier.padding(24.dp)) {
-                            Text(
-                                "Keystore Configuration",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                RadioButton(
-                                    selected = !state.useCustomKeystore,
-                                    onClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        viewModel.setUseCustomKeystore(false)
-                                    }
-                                )
-                                Text("Use Embedded Default Keystore", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 8.dp))
-                            }
-
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                RadioButton(
-                                    selected = state.useCustomKeystore,
-                                    onClick = {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        viewModel.setUseCustomKeystore(true)
-                                    }
-                                )
-                                Text("Use Custom Key (.jks / .keystore)", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 8.dp))
-                            }
-
-                            AnimatedVisibility(
-                                visible = state.useCustomKeystore,
-                                enter = fadeIn(tween(300, easing = EmphasizedDecelerate)) +
-                                        expandVertically(tween(350, easing = EmphasizedDecelerate)),
-                                exit = fadeOut(tween(180)) + shrinkVertically(tween(220, easing = EmphasizedAccelerate))
-                            ) {
-                                Column(modifier = Modifier.padding(top = 16.dp, start = 8.dp, end = 8.dp)) {
-                                    Button(
-                                        onClick = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            keystorePickerLauncher.launch(arrayOf("*/*"))
-                                        },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(50.dp),
-                                        shape = RoundedCornerShape(14.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    ) {
-                                        Text(if (state.customKeystoreUri == null) "Select Keystore File" else "Selected: ${state.customKeystoreName}")
-                                    }
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    OutlinedTextField(
-                                        value = state.customAlias,
-                                        onValueChange = { viewModel.updateCustomKeystoreParams(it, state.customKeyPass, state.customStorePass) },
-                                        label = { Text("Key Alias") },
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = MaterialTheme.shapes.small
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    OutlinedTextField(
-                                        value = state.customStorePass,
-                                        onValueChange = { viewModel.updateCustomKeystoreParams(state.customAlias, state.customKeyPass, it) },
-                                        label = { Text("Store Password") },
-                                        visualTransformation = PasswordVisualTransformation(),
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = MaterialTheme.shapes.small
-                                    )
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                    OutlinedTextField(
-                                        value = state.customKeyPass,
-                                        onValueChange = { viewModel.updateCustomKeystoreParams(state.customAlias, it, state.customStorePass) },
-                                        label = { Text("Key Password") },
-                                        visualTransformation = PasswordVisualTransformation(),
-                                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                                        singleLine = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        shape = MaterialTheme.shapes.small
-                                    )
-                                }
-                            }
-                        }
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ApkDetailsCard(state, viewModel, haptic)
+                        UtilitiesRow(state, viewModel, haptic)
+                        KeystoreCard(state, viewModel, keystorePickerLauncher, haptic)
                     }
                 } else {
-                    // Signing Progress UI
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = MaterialTheme.shapes.large,
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                        ),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    ) {
-                        Column(modifier = Modifier.padding(24.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Signing Progress", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "${(state.signProgress * 100).toInt()}%",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(16.dp))
-                            val animatedSignProgress by animateFloatAsState(
-                                targetValue = state.signProgress,
-                                animationSpec = tween(400, easing = FastOutSlowInEasing),
-                                label = "signProgress"
-                            )
-                            LinearProgressIndicator(
-                                progress = { animatedSignProgress },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(8.dp),
-                                strokeCap = StrokeCap.Round,
-                                color = MaterialTheme.colorScheme.primary,
-                                trackColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                            Spacer(modifier = Modifier.height(24.dp))
-
-                            Text("Current Step:", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(modifier = Modifier.height(8.dp))
-                            AnimatedContent(
-                                targetState = state.currentStep,
-                                transitionSpec = {
-                                    (fadeIn(tween(250, easing = EmphasizedDecelerate)) +
-                                            slideInHorizontally(tween(300, easing = EmphasizedDecelerate)) { it / 8 }) togetherWith
-                                            fadeOut(tween(150))
-                                },
-                                label = "StepAnimation"
-                            ) { step ->
-                                Text(
-                                    step,
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(24.dp))
-
-                            // Terminal Logs
-                            val logListState = rememberLazyListState()
-                            LaunchedEffect(state.signLogs.size) {
-                                if (state.signLogs.isNotEmpty()) {
-                                    logListState.animateScrollToItem(state.signLogs.size - 1)
-                                }
-                            }
-
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp),
-                                shape = MaterialTheme.shapes.medium,
-                                color = Color(0xFF0D1117),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
-                            ) {
-                                LazyColumn(
-                                    state = logListState,
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    item {
-                                        Text(
-                                            "> Live Log Output...",
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.sp,
-                                            color = Color.Gray
-                                        )
-                                    }
-                                    items(state.signLogs) { log ->
-                                        Text(
-                                            log,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 12.sp,
-                                            color = TerminalGreen
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    SigningProgressCard(state)
                 }
             }
+            Spacer(modifier = Modifier.height(4.dp))
         }
 
-        // 4. Action Button
-        item {
+        // ------------------------------------------------------------------
+        // Fixed action bar — screen er bottom e ALWAYS visible
+        // ------------------------------------------------------------------
+        Column(
+            modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp)
+        ) {
             if (state.isSigning) {
                 OutlinedButton(
                     onClick = {
@@ -1425,7 +1335,7 @@ fun ConfigScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(64.dp)
+                        .height(60.dp)
                         .pressScale(0.98f),
                     shape = RoundedCornerShape(20.dp)
                 ) {
@@ -1439,38 +1349,504 @@ fun ConfigScreen(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(64.dp)
+                        .height(60.dp)
                         .pressScale(0.98f),
                     shape = RoundedCornerShape(20.dp),
                     enabled = (!state.useCustomKeystore || (state.customKeystoreUri != null && state.customAlias.isNotEmpty())),
                     elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp, pressedElevation = 1.dp)
                 ) {
-                    Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(28.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("SIGN APK NOW", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                    Icon(Icons.Filled.Build, contentDescription = null, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("SIGN APK NOW", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
                 }
             }
 
-            AnimatedVisibility(visible = state.signError != null) {
+            androidx.compose.animation.AnimatedVisibility(visible = state.signError != null) {
                 Card(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                     modifier = Modifier
-                        .padding(top = 16.dp)
+                        .padding(top = 12.dp)
                         .fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium
                 ) {
                     Text(
                         text = "Error: ${state.signError ?: ""}",
                         color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(16.dp),
-                        style = MaterialTheme.typography.bodyMedium
+                        modifier = Modifier.padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall
                     )
                 }
             }
         }
-        item { Spacer(modifier = Modifier.height(48.dp)) }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Config: compact APK details card
+// ---------------------------------------------------------------------------
+@Composable
+private fun ApkDetailsCard(
+    state: MainState,
+    viewModel: MainViewModel,
+    haptic: HapticFeedback
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.VerifiedUser,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(26.dp)
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        state.selectedApkName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        if (state.manifestPackageName.isNotEmpty())
+                            "${state.manifestPackageName} • v${state.manifestVersionName}"
+                        else "Size: ${state.selectedApkSize}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                // Status chip
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (state.isApkSigned)
+                        MaterialTheme.colorScheme.errorContainer
+                    else
+                        MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        if (state.isApkSigned) "Signed" else "Ready",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (state.isApkSigned)
+                            MaterialTheme.colorScheme.onErrorContainer
+                        else
+                            MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                "Size: ${state.selectedApkSize}" + if (state.isApkSigned) " • ${state.apkSignatures}" else "",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (state.selectedApkHash.isNotEmpty()) {
+                Text(
+                    "SHA-256: ${state.selectedApkHash}",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            if (!state.isSigning) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.resetApkSelection()
+                        }
+                    ) {
+                        Icon(Icons.Filled.FilePresent, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Change APK File")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config: compact utilities row
+// ---------------------------------------------------------------------------
+@Composable
+private fun UtilitiesRow(
+    state: MainState,
+    viewModel: MainViewModel,
+    haptic: HapticFeedback
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Filled.Build,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                "Utilities",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onTertiaryContainer
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            OutlinedButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.navigateToPhase(AppPhase.MANIFEST_VIEWER)
+                },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.height(36.dp)
+            ) {
+                Text("Manifest", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.navigateToPhase(AppPhase.APP_CLONER)
+                },
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                modifier = Modifier.height(36.dp)
+            ) {
+                Text("Cloner", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config: keystore selection card
+// ---------------------------------------------------------------------------
+@Composable
+private fun KeystoreCard(
+    state: MainState,
+    viewModel: MainViewModel,
+    keystorePickerLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>,
+    haptic: HapticFeedback
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Keystore Configuration", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pressScale(0.99f)
+                    .clickable { viewModel.setUseCustomKeystore(false) }
+            ) {
+                RadioButton(
+                    selected = !state.useCustomKeystore,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.setUseCustomKeystore(false)
+                    }
+                )
+                Text("Embedded Default Keystore", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 4.dp))
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pressScale(0.99f)
+                    .clickable { viewModel.setUseCustomKeystore(true) }
+            ) {
+                RadioButton(
+                    selected = state.useCustomKeystore,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.setUseCustomKeystore(true)
+                    }
+                )
+                Text("Custom Key (.jks / .keystore)", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 4.dp))
+            }
+
+            AnimatedVisibility(
+                visible = state.useCustomKeystore,
+                enter = fadeIn(tween(300, easing = EmphasizedDecelerate)) +
+                        expandVertically(tween(350, easing = EmphasizedDecelerate)),
+                exit = fadeOut(tween(180)) + shrinkVertically(tween(220, easing = EmphasizedAccelerate))
+            ) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            keystorePickerLauncher.launch(arrayOf("*/*"))
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(46.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    ) {
+                        Text(
+                            if (state.customKeystoreUri == null) "Select Keystore File" else state.customKeystoreName,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = state.customAlias,
+                        onValueChange = { viewModel.updateCustomKeystoreParams(it, state.customKeyPass, state.customStorePass) },
+                        label = { Text("Key Alias") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.small
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = state.customStorePass,
+                        onValueChange = { viewModel.updateCustomKeystoreParams(state.customAlias, state.customKeyPass, it) },
+                        label = { Text("Store Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.small
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = state.customKeyPass,
+                        onValueChange = { viewModel.updateCustomKeystoreParams(state.customAlias, it, state.customStorePass) },
+                        label = { Text("Key Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.small
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config: signing progress card — Material 3 + iOS-smooth motion
+// ---------------------------------------------------------------------------
+@Composable
+private fun SigningProgressCard(state: MainState) {
+    // iOS-smooth: critically damped spring (kono bounce nei)
+    val animatedSignProgress by animateFloatAsState(
+        targetValue = state.signProgress,
+        animationSpec = spring(dampingRatio = 1f, stiffness = 380f),
+        label = "signProgress"
+    )
+    // Gentle pulsing shield icon
+    val iconScale by rememberInfiniteTransition(label = "signPulse").animateFloat(
+        initialValue = 1f,
+        targetValue = 1.1f,
+        animationSpec = infiniteRepeatable(
+            tween(1200, easing = FastOutSlowInEasing),
+            RepeatMode.Reverse
+        ),
+        label = "iconScale"
+    )
+    val logListState = rememberLazyListState()
+    LaunchedEffect(state.signLogs.size) {
+        if (state.signLogs.isNotEmpty()) {
+            logListState.animateScrollToItem(state.signLogs.size - 1)
+        }
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+    ) {
+        Column(modifier = Modifier.padding(20.dp)) {
+            // Header — pulsing shield + title
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.Security,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .size(28.dp)
+                                .scale(iconScale)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                Column {
+                    Text(
+                        "Signing APK",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Applying V1 + V2 + V3 signatures",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // Big percentage
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Column {
+                    Text(
+                        "Progress",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "${(animatedSignProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.displaySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Text(
+                    state.selectedApkName,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(start = 16.dp, bottom = 4.dp)
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { animatedSignProgress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(12.dp),
+                strokeCap = StrokeCap.Round,
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.primaryContainer
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Current step — smooth iOS-feel transition
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.PlayCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                AnimatedContent(
+                    targetState = state.currentStep,
+                    transitionSpec = {
+                        (fadeIn(tween(250, easing = EmphasizedDecelerate)) +
+                                slideInVertically(tween(300, easing = EmphasizedDecelerate)) { it / 6 }) togetherWith
+                                fadeOut(tween(150))
+                    },
+                    label = "StepAnimation"
+                ) { step ->
+                    Text(
+                        step,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Matrix mini-terminal — live log
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(160.dp),
+                shape = MaterialTheme.shapes.medium,
+                color = Color(0xFF030A05),
+                border = BorderStroke(1.dp, TerminalGreen.copy(alpha = 0.25f))
+            ) {
+                Box {
+                    MatrixRain(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .alpha(0.15f)
+                    )
+                    LazyColumn(
+                        state = logListState,
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        items(state.signLogs) { log ->
+                            Text(
+                                log,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 12.sp,
+                                color = matrixLogColor(log)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 
 // ---------------------------------------------------------------------------
 // Helpers
